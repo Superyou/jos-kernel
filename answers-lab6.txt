@@ -1,0 +1,40 @@
+1. How did you structure your transmit implementation? In particular, what do you do if the transmit ring is full?
+
+solution:
+structure of transmit process:
+  a. Initialized transmit descriptor base address(low) register of ethernet to physical address of transmit   descriptor ring
+  b. Similarly initialized TDLEN register
+  c. Activated the enable bit in transmit control register (TCTL)
+  d. set TCTL.COLD = 0x40 (i.e full duplex mode)
+  e. enable PSP(pad short packet bit) in TCTL
+  f. Set the TIPG.
+
+ Dealing with full ring:
+
+ When we set the RS bit in command feild of transmit descriptor then when the ethernet transmit the packet it will set the DD bit in status field of descriptor. This indicates that when that packet is processed and we can use that descriptor for future transmit work. But when all the descriptor are full that is DD=0 for all descriptor then the ring is complete full and transmitter has fallen back. So in this case I return 
+ "-E_TX_DESC_FAILURE" status as effect of the system call. When user environment get this status it functions same as sys_try_send code i.e I yeild the environment and retry again when it is scheduled next.(Polling with yeild)(code can be seen at output.c)
+
+
+2. How did you structure your receive implementation? In particular, what do you do if the receive queue is empty and a user environment requests the next incoming packet? 
+
+Solution:
+Initialization steps:
+  a.  as we initialized the transmitter register of ethernet we will also do the same for receiver register..
+  b. Set RAL and RAH address to MAC address of machine
+  c. Set RDBAL(receive descriptor base address low) to physical address of receive descriptor array.
+  d. Set the RDLEN appropriately.
+  e. Control register setting: enable, broadcast enable, strip ethernet CRC bits
+
+ Dealing with empty ring:
+ When there is packet received by the ethernet, it sets the DD bit of descriptor inwhich it places the data which is received. So when there are no packets received by receiver DD bits of all descriptor will be set to 0. So in this case I apply the same logic of polling with yeild as used for transmit.(code can be seen at input.c)
+
+
+3. Challenge! Read about the EEPROM in the developer's manual and write the code to load the E1000's MAC address out of the EEPROM. Currently, QEMU's default MAC address is hard-coded into both your receive initialization and lwIP. Fix your initialization to use the MAC address you read from the EEPROM, add a system call to pass the MAC address to lwIP, and modify lwIP to the MAC address read from the card. Test your change by configuring QEMU to use a different MAC address. 
+
+Solution:
+ 
+ I have memory mapped ethernet controller into the kernel address space. So software can use  the EEPROM Read register (EERD) to cause the Ethernet controller to read a word from the EEPROM. So basically EEPROM consist of hardcoded physical address of the machine. So prior to this we hardcoded the MAC address into our software. So to read the hardcoded physical address from EEPROM I have added system call --> sys_read_mac(uint8_t *) which returns the MAC address to the requesting process. So this system call lands in e1000.c file where it calls get_mac()(line 30) which reads 6 bytes from EERD register and aligns the MAC address as required by software process. So in your previous code we had hardcoded the MAC address in testinput.c and /net/lwip/jos/jif/jif.c. So i replaced these hardcoded MAC address to system calls which reads the MAC address from EEPROM whenever required.
+
+ changes in existing code:
+ 1. testinput.c , announce(), line 20 (sys_read_mac system call added)
+ 2. /net/lwip/jos/jif/jif.c, low_level_init(), line 70, (sys_read_mac system call added)

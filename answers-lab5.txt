@@ -1,0 +1,33 @@
+
+1. Do you have to do anything else to ensure that this I/O privilege setting is saved and restored properly when you subsequently switch from one environment to another? Why? 
+
+solution:
+No, we dont have to do anything else to ensure about this I/O privilege setting is saved and restored properly when you subsequently switch from one environment to another. This is because eflags have IOPL bits which controls the access of I/O address space. And IOPL and IF bits of eflag can nly be modified by environment running at CPL=0(kernel). The CPL of the currently running program or task must be less than or equal to the IOPL toaccess the I/O address space. This field can only be modified by the POPF and IRET instructions when operating at a CPL of 0. And in your case only kernel is operating at CPL=0. So we don't have to care about IOPL bits of eflag while switching from environment to other as no other environment can alter these bits other than kernel. 
+
+
+Challenge! The block cache has no eviction policy. Once a block gets faulted in to it, it never gets removed and will remain in memory forevermore. Add eviction to the buffer cache. Using the PTE_A "accessed" bits in the page tables, which the hardware sets on any access to a page, you can track approximate usage of disk blocks without the need to modify every place in the code that accesses the disk map region. Be careful with dirty blocks. 
+
+Solution:
+
+I add the functionality of evicting blocks(pages like in pageout daemon) for file system environment. 
+Eviction policy can be called:
+ a. when allocation of new blocks is not possible  (fs.c-alloc_block())
+ b. I have also given user environment the policy to evict disk block by adding new fsipc command FSREQ_EVICT.
+
+How eviction works:
+we traverse through every block from address 0x10000000 to 0xC0000000 (fs.c - fs_evict()) and for first accessed block we check if it is dirty or not. If it is dirty we flush and then free that block by unmapping it and updating the bitmap. If the block is not dirty then we don't flush it.
+
+How to test:
+1. added user/evict.c which makes the fsipc for evicting page from userspace. in fs_evict() I have printed virtual address of the block which is getting evicted. I have also added assert statements before and after freeing to make sure we are doing the right operation. You can check the code in fs/fs.c - fs_evict().
+
+Successful eviction message:
+ -- In user environment you get block number of evicted page.
+ -- In file system we are printing the virtual address of page which we freed
+
+ output:
+successfully removed disk block at address:0x10002000
+
+FS evicted block:2
+
+Future work:
+we can expand the api call by mentioning how much memory do we want to evict.

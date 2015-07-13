@@ -1,0 +1,204 @@
+Q1. Assuming that the following JOS kernel code is correct, what type should variable x have, uintptr_t or physaddr_t?
+
+	mystery_t x;
+	char* value = return_a_pointer();
+	*value = 10;
+	x = (mystery_t) value;
+
+Solution: uintptr_t
+
+
+
+
+Q2.
+Solution: 
+
+
+
+
+Entry 	 |         Base Virtual Address 	      | Points to (logically):
+-------------------------------------------------------------------------------------------
+1023     |          0xFFC00000                  | page table for physical address from 252-256MB
+1022	   |	        0xFF800000                  | page table for physical address from 248-252MB
+ .       |               .                      |                   .
+ .       |               .                      |                   .
+961      |          0XF0800000                  | page table for physical address from 8-12MB
+961      |          0XF0400000                  | page table for physical address from 4-8MB 
+960      |          0xF0000000                  | page table for physical address from 0-4MB 
+959      |          0XEFC00000                  | page table for physical address of bootstack
+958      |          0xEF800000                  | No Mapping
+957      |          0xEF400000                  | page table for PADDR(pages)
+956      |          0xEF000000                  | page table for PADDR(pages)
+------------------------------------------------------------------------------------------
+955      |                                      | No Mapping        
+ .       |                                      | No Mapping
+ .       |                                      | No Mapping
+2	       |          0x00800000	                | No Mapping
+1	       |           0x00400000	                | No Mapping
+0	       |           0x00000000	                | No Mapping
+-------------------------------------------------------------------------------------------
+
+/* My reference purpose
+
+0xef000000       10bits MSB = 956  
+(VA)UPAGES       ---------------->  kern_pgdir[956/955] -------> page table
+
+
+                           959   
+(VA)KSTACKTOP-KSTKSIZE  -----------> kern_pgdir[959]
+
+
+                    960
+(VA) KERNBASE  to 0xFFFFFFFF --------------> kern_pgdir[960] - kern_pgdir[1023]  = 256 MB = 64 Page Directory Entry
+
+*/
+
+Q3. We have placed the kernel and user environment in the same address space. Why will user programs not be able to read or write the kernel's memory? What specific mechanisms protect the kernel memory?
+
+Solution:
+   a. Kernel image loading details:
+      
+          (VA) (KERNBASE + 1MB) i.e @ 0xF0100000 --------->(mapped)-----> physical memory 0x00100000 (1MB) 
+          permissions for above mapping RW/--.
+
+          Only kernel have permission to read and write into physical pages where kernel ELF is loaded. Hence from virtual address KERNBASE to KERNBASE+256MB ----mapped to---> physical address 0 to 256MB don't have permission to read as well as write for user process.
+
+
+ Q4.    What is the maximum amount of physical memory that this operating system can support? Why?
+ soln:  This question is little ambigious. So I am answering for all cases
+
+   case 1: physical memory supported with the current qemu settings:
+
+           We have total RAM memory = 66556K = 16639 pages of 4KB. After allocating this many pages page_alloc() will run out of physical memory and then we will have to swap pages to allocate new pages.
+
+   case 2: Physical memory actually supported with no restriction
+           Now we can allocate 4 GB of physical memory with 32 bit address space. In this case kernel will be loaded from virtual address KERNBASE to KERNBASE+256MB ----mapped to---> physical address 0 to 256MB. And rest of physical memory can be allocated for user and other mappings in memlayout.h below KERNBASE.
+
+Q5.   How much space overhead is there for managing memory, if we actually had the maximum amount of physical memory? How is this overhead broken down?
+
+Solution:
+   Space Overhead required to manage physical memory of 4 GB(max supported) w/o paging:
+       Assuming we will have 4KB pages the we will have 12 bit offset and 1 MB page table enteries.
+       so space required all 1 MB enteries = 4 MB.
+
+   This overhead can be broken by following ways:
+       1. Enable paging which follows demand paging mechanism and all tables are not allocated instantly. Tables are allocated as user process request new pages. 
+              a. Space required for page directory table = 4 KB
+              b. Space requried for one page table       = 4 KB  (allocate on demand)
+       2. For processors who provide a way for support of 4 MB size pages:
+
+          So for continuous allocation of memory you can just enable PS bit in PDE and PSE flag in CR4 then you can have multiplexing of 4KB and 4 MB pages.
+
+
+Q6. Revisit the page table setup in kern/entry.S and kern/entrypgdir.c. Immediately after we turn on paging, EIP is still a low number (a little over 1MB). At what point do we transition to running at an EIP above KERNBASE? What makes it possible for us to continue executing at a low EIP between when we enable paging and when we begin running at an EIP above KERNBASE? Why is this transition necessary?
+
+Solution:
+   Below are lines from entry.S and entrypgdir.c which we will refer for answering this question:
+
+/*-----------------entry.S-------------------
+
+    movl	$(RELOC(entry_pgdir)), %eax
+	movl	%eax, %cr3
+	# Turn on paging.
+	movl	%cr0, %eax
+	orl	$(CR0_PE|CR0_PG|CR0_WP), %eax
+	movl	%eax, %cr0
+
+	# Now paging is enabled, but we're still running at a low EIP
+	# (why is this okay?).  Jump up above KERNBASE before entering
+	# C code.
+	# Running at low EIP is still okay because in entry_pgdir we have
+	#entry_pgdir[0] having the address PA of page table which is mapped to
+	# PA from [0,4MB]
+	
+	mov	$relocated, %eax
+	jmp	*%eax
+relocated:
+
+...
+..
+.
+ --------------------------------------------*/
+
+ /*-----------------entrypgdir.c--------------
+//below code from entrypgdir.c temporarily maps physical memory from 0-4MB region
+//to virtual address [0, 4MB) and [KERNBASE, KERNBASE+4MB) during creation of temp pgdir. 
+
+
+ pde_t entry_pgdir[NPDENTRIES] = {
+	// Map VA's [0, 4MB) to PA's [0, 4MB)
+	[0]
+		= ((uintptr_t)entry_pgtable - KERNBASE) + PTE_P,
+	// Map VA's [KERNBASE, KERNBASE+4MB) to PA's [0, 4MB)
+	[KERNBASE>>PDXSHIFT]
+		= ((uintptr_t)entry_pgtable - KERNBASE) + PTE_P + PTE_W
+};
+
+    
+ --------------------------------------------*/
+
+
+
+   part 1: At what point do we transition to running at an EIP above KERNBASE?
+   ------> jmp	*%eax
+   			When we jump to relocated address we are running at high address i.e address above KERNBASE.
+
+   part 2. What makes it possible for us to continue executing at a low EIP between when we enable paging and when we begin running at an EIP above KERNBASE?
+   ------>
+         - In above entry.S file when we enable paging by enabling paging bit in CR3 register then every address is treated as virtual address and is subjected to address translation mechanism by MMU.
+         - So after enabling this bit and before jumping to high address of "relocated" we are still at low address which will undergo address translation mechanism.
+
+         - So in entrypgdir.c - 
+               "pde_t entry_pgdir[]" have two entries @ (entry_pgdir+0) and @(entry_pgdir+(KERNBASE>>PDXSHIFT))
+               This means that all virtual address from :
+                  1. VA [0 to 4MB)                 ---maps--> Physical Address [0 to 4MB) @ kernel loaded ELF location
+                  2. VA [KERNBASE to KERNBASE+4MB] ---maps--> Physical Address [0 to 4MB) @ kernel loaded ELF ELF location
+
+                So for both ranges of virtual address we will land up at corressponding [0 to 4MB) physical address where our kernel ELF is loaded after address translation. Hence even after enabling paginf our EIP is at low address and we still have valid mapping for it in entry_pgdir.
+   
+   part 3. Why is this transition necessary? 
+   ------> As kernel is mapped at high address in virtual address space and low address VA are for user process in JOS, we need to jump to high address. And as of now we are implementing kernel code so we have to generate virtual address above KERNBASE. So we need to have this transition from low address VA to high address VA.
+
+
+
+   Challenge problem:
+   -------------------
+
+Challenge! Extend the JOS kernel monitor with commands to:
+
+    a. Display in a useful and easy-to-read format all of the physical page mappings (or lack thereof) that apply to a particular range of virtual/linear addresses in the currently active address space. For example, you might enter 'showmappings 0x3000 0x5000' to display the physical page mappings and corresponding permission bits that apply to the pages at virtual addresses 0x3000, 0x4000, and 0x5000.
+    
+    --->
+        Syntax: showmappings va_addr1 va_addr2
+        ex.
+        K> showmappings 0xf0000000 0xf0005000
+
+			virtual address: 0xf0000000 Physical Page Address: 0x0 Page Permission:3 -> PTE_P PTE_W
+			virtual address: 0xf0001000 Physical Page Address: 0x1000 Page Permission:35 -> PTE_P PTE_W PTE_A
+			virtual address: 0xf0002000 Physical Page Address: 0x2000 Page Permission:3 -> PTE_P PTE_W
+			virtual address: 0xf0003000 Physical Page Address: 0x3000 Page Permission:3 -> PTE_P PTE_W
+			virtual address: 0xf0004000 Physical Page Address: 0x4000 Page Permission:3 -> PTE_P PTE_W
+			virtual address: 0xf0005000 Physical Page Address: 0x5000 Page Permission:3 -> PTE_P PTE_W
+
+        Added a function print_mapping() which displays corresponding physical page address and permissions for the page.
+
+    b. Explicitly set, clear, or change the permissions of any mapping in the current address space.
+    ----->
+          Syntax: chperm virtual_addr permission
+          This command sets the permission for corresponding PTE for this virtual address
+    
+    c. Dump the contents of a range of memory given either a virtual or physical address range. Be sure the dump code behaves correctly when the range extends across page boundaries!
+    ------>
+           Syntax: dumpmem va_addr1 va_addr2 
+           ex. 
+           K> dumpmem 0xf0100000 0xf010001f
+
+			 0xf0100000 - 0xf010000c: 1badb002 0 e4524ffe 7205c766 
+			 0xf0100010 - 0xf010001f: 34000004 7000b812 220f0011 c0200fd8
+           
+           This displays the dump of value for given virtual address range 
+    
+    d. Do anything else that you think might be useful later for debugging the kernel. (There's a good chance it will be!)
+    ------> At this momen I have not figure out what to add. But in later lab assignment if required I will add new commands.
+
+

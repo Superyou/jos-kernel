@@ -1,0 +1,54 @@
+Q1. Compare kern/mpentry.S side by side with boot/boot.S. Bearing in mind that kern/mpentry.S is compiled and linked to run above KERNBASE just like everything else in the kernel, what is the purpose of macro MPBOOTPHYS? Why is it necessary in kern/mpentry.S but not in boot/boot.S? In other words, what could go wrong if it were omitted in kern/mpentry.S? 
+
+solution: 
+In case of boot.S, it is loaded and linked at same 0x7c00 address. So when boot.S executes we don't have to manipulate the address as the symbols are at the same absolute address as link address. But in case of mpentry.S, to run with 20 bit address in real mode, So we load the code at 0x7000 address location which satisfies the terms of real address. But mpentry.S is linked to address above KERNBASE. So each time when we want to access its symbols we need to add the symbol offset with MPENTRY_PADDR to get the absolute address of its symbols. If we didn't call to MPBOOTPHYS then wrong absolute symbol address will be generated.
+
+
+Q2. It seems that using the big kernel lock guarantees that only one CPU can run the kernel code at a time. Why do we still need separate kernel stacks for each CPU? Describe a scenario in which using a shared kernel stack will go wrong, even with the protection of the big kernel lock. 
+
+Solution:
+
+problem with 1 stack:
+
+When we pop the trapframe of enviroment then we unlock the kernel lock. So between complete popping of trapframe of old environment if new environment running on other CPU traps into kernel then its trapframe will get stored on the same kernel stack and esp is incremented. But old environement is not done with complete popping and so it will pop new environments registers. So intermingling of registers can happen between release of lock and iret call of old env if some new env traps in between. 
+
+Also we will require multiple stacks to handler interrupts from hardware.
+
+
+Q3.  In your implementation of env_run() you should have called lcr3(). Before and after the call to lcr3(), your code makes references (at least it should) to the variable e, the argument to env_run. Upon loading the %cr3 register, the addressing context used by the MMU is instantly changed. But a virtual address (namely e) has meaning relative to a given address context--the address context specifies the physical address to which the virtual address maps. Why can the pointer e be dereferenced both before and after the addressing switch? 
+
+Solution: 
+We have allocated envs[] above KERNBASE address region which is common in all environments virtual memory as we set it in env_vm_setup(). So access to 'e' before and after loading lcr3 will lead to same physical memory mapping in all environments.
+
+Q4. Whenever the kernel switches from one environment to another, it must ensure the old environment's registers are saved so they can be restored properly later. Why? Where does this happen?
+
+Solution: We need to ensure that old environments registers are saved because whenever we restore back the environment we have the correct instruction pointer, esp, all general purpose register pointing correct data. This is logic is used for context switching by which we can run multiple environments even on same CPU by pre-empting and restoring correct registers. 
+We store the registers in TSS region of trapped CPU (trapentry.S) indicated by trapframe structure abstraction.
+
+
+Challenge problem:
+ Implement a shared-memory fork() called sfork(). This version should have the parent and child share all their memory pages (so writes in one environment appear in the other) except for pages in the stack area, which should be treated in the usual copy-on-write manner. Modify user/forktree.c to use sfork() instead of regular fork(). Also, once you have finished implementing IPC in part C, use your sfork() to run user/pingpongs. You will have to find a new way to provide the functionality of the global thisenv pointer. 
+
+ Solution:
+ Sfork is same as fork except for these things:
+ 1. In duppage() we used to set PTE_COW bit for write pages, but for sfork we just set perm to same as parent page. And then finally we have to insert the mapping of addr = pn * PGSIZE into destination envid. No need to do it for parent as they are sharing pages(s_duppage)
+
+ 2.  I copy the stack page of parent in child in its stack region. This copying  is done same as dumbfork(see to sf_stack_duppage())
+ 
+ 3. And then we set the exception stack same as we do for fork().
+
+ Sfork tests:
+ 1. My sfork passes the forktree.c user test.
+ 2. My sfork also passes pingpongs.c test.
+   workaround for thisenv:
+      I have changed thisenv to a macro as follow:
+          #define thisenv (&envs[ENVX(sys_getenvid())]).
+      so to avoid all assignment statement (lvalue errors)
+         thisenv = ...
+      I have removed those statements. So in dumbfork.c I have commented the line for child creation as it will give lvalue error.
+      //thisenv = &envs[ENVX(sys_getenvid())];
+
+   Rest everything works fine.
+
+ Make grade works fine with passing all tests.
+
